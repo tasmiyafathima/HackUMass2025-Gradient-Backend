@@ -1,0 +1,44 @@
+Question: Name
+Answer: Tasmiya Fathima
+
+Question: Father's Name
+Answer: Ishrath Abbas
+
+Question: Mother's Name
+Answer: Farhana Fathima
+
+Question: Date of Birth
+Answer: 13/12/1999
+
+Question: Age
+Answer: 25 Years
+
+Question: Religion
+Answer: Muslim
+
+Question: Caste
+Answer: Shia
+
+Question: Height
+Answer: 5'2"
+
+Question: Qualification
+Answer: B.E in Computer Science and Engineering with Honors in AI, ML and NLP B.M.S. College of Engineering
+
+Question: Occupation
+Answer: System Software Engineer at Hewlett Packard Enterprise(hpe)
+
+Question: Marital Status
+Answer: Single
+
+Question: Address
+Answer: Bangalore, India
+
+Question: Siblings
+Answer: 2
+
+Question: Younger Sister
+Answer: Sosun Fathima (Pursuing M.B.B.S)
+
+Question: Younger Brother
+Answer: Mohammed Wasif Abbas (12th Standard)
