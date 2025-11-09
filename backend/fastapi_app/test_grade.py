@@ -50,7 +50,7 @@ if __name__ == "__main__":
             print("----")
 
             if res.get("status") == "graded":
-                print("Grading Output:\n", res.get("grading")[:1000])  # show first 1000 chars
+                print("Grading Output:\n", res.get("grading"))  # show first 1000 chars
                 print("----\n")
 
     except Exception as e:

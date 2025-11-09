@@ -102,17 +102,76 @@ def grade_student_answer(rubric_text: str, student_answer: str, model_name: str 
         ...
       ],
       "overall_feedback": "<overall comment summarizing performance>"
+      "total_score":"<The total score achieved by the student>"
     }}
     """
-    response = model.generate_content(
-        grading_prompt,
-        generation_config=types.GenerationConfig(
-            temperature=0.1,
-            max_output_tokens=1000
+    
+    # Add safety settings to allow educational content
+    safety_settings = [
+        {
+            "category": "HARM_CATEGORY_HARASSMENT",
+            "threshold": "BLOCK_NONE"
+        },
+        {
+            "category": "HARM_CATEGORY_HATE_SPEECH",
+            "threshold": "BLOCK_NONE"
+        },
+        {
+            "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+            "threshold": "BLOCK_NONE"
+        },
+        {
+            "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+            "threshold": "BLOCK_NONE"
+        }
+    ]
+    
+    try:
+        response = model.generate_content(
+            grading_prompt,
+            generation_config=types.GenerationConfig(
+                temperature=0.1,
+                max_output_tokens=100000
+            ),
+            safety_settings=safety_settings
         )
-    )
-    return response.text
-
+        
+        # Check if response was blocked
+        if not response.candidates:
+            return {
+                "error": "Response blocked by safety filters",
+                "finish_reason": "SAFETY",
+                "detail": "No candidates returned"
+            }
+        
+        # Check finish reason
+        candidate = response.candidates[0]
+        if candidate.finish_reason != 1:  # 1 = STOP (normal completion)
+            finish_reasons = {
+                0: "FINISH_REASON_UNSPECIFIED",
+                1: "STOP",
+                2: "SAFETY",
+                3: "RECITATION",
+                4: "OTHER"
+            }
+            return {
+                "error": "Response not completed normally",
+                "finish_reason": finish_reasons.get(candidate.finish_reason, "UNKNOWN"),
+                "safety_ratings": [
+                    {
+                        "category": rating.category,
+                        "probability": rating.probability
+                    } for rating in candidate.safety_ratings
+                ]
+            }
+        
+        return response.text
+        
+    except Exception as e:
+        return {
+            "error": "Exception during generation",
+            "detail": str(e)
+        }
 
 def transcribe_pdf_from_path(pdf_path: str, system_prompt: str, model_name: str = "gemini-2.5-flash"):
     try:
@@ -332,7 +391,7 @@ def grade_submissions_for_assignment(assignment_id: str, assignment_idea: str, s
                         
                         student_text = transcribe_pdf_from_path(local_name, PROMPT_ANSWERSCRIPT)
                         grading = grade_student_answer(assignment_idea, student_text)
-                        
+                        print(grading)
                         results.append({
                             "submission_id": submission_id,
                             "user_id": user_id,
