@@ -311,28 +311,65 @@ def grade_submissions_for_assignment(assignment_id: str) -> Dict[str, Any]:
 
     try:
         for sub in submissions:
-            submission_id = sub.get("id")
-            user_id = sub.get("user_id")
-            file_url = sub.get("file_url")
-
-            if not file_url:
-                results.append({"submission_id": submission_id, "user_id": user_id, "status": "skipped", "reason": "no file_url"})
-                continue
-
             try:
-                signed_url = get_signed_url(file_url, SUPABASE_URL, SUPABASE_KEY, "submissions")
-                signed_resp = requests.get(signed_url, timeout=10)
-                if signed_resp.status_code == 200:
-                    local_name = os.path.join(tmpdir, f"{uuid.uuid4()}_{os.path.basename(file_url)}")
-                    with open(local_name, "wb") as f:
-                        f.write(signed_resp.content)
-                    student_text = transcribe_pdf_from_path(local_name, PROMPT_ANSWERSCRIPT)
-                    grading = grade_student_answer(rubric_text=rubric_txt, question_text=question_txt, student_answer=student_text)
-                    results.append({"submission_id": submission_id, "user_id": user_id, "status": "graded", "grading": grading})
-                    upload_results(SUPABASE_URL, SUPABASE_KEY, submission_id, user_id, "graded", grading, assignment_id)
-                else:
-                    results.append({"submission_id": submission_id, "user_id": user_id, "status": "download_failed"})
-                    upload_results(SUPABASE_URL, SUPABASE_KEY, submission_id, user_id, "failed", {}, assignment_id)
+                user_id = sub.get("user_id")
+                file_url = sub.get("file_url")
+                submission_id = sub.get("id")
+                
+                print(f"\n📄 Processing submission:")
+                print(f"   Submission ID: {submission_id}")
+                print(f"   User ID: {user_id}")
+                print(f"   Raw file_url: '{file_url}'")
+                
+                if not file_url:
+                    results.append({
+                        "submission_id": submission_id,
+                        "user_id": user_id,
+                        "status": "skipped",
+                        "reason": "no public file_url present"
+                    })
+                    continue
+
+                # Approach 2: Signed URL
+                print(f"\n🔄 Attempt 2: Signed URL")
+                try:
+                    signed_url = get_signed_url(file_url, SUPABASE_URL, SUPABASE_KEY, "submissions")
+                    print(f"   Signed URL: {signed_url}")
+                    
+                    signed_resp = requests.get(signed_url, timeout=10)
+                    print(f"   Signed response status: {signed_resp.status_code}")
+                    
+                    if signed_resp.status_code == 200:
+                        print(f"   ✅ Signed download successful!")
+                        local_name = os.path.join(tmpdir, f"{uuid.uuid4()}_{os.path.basename(file_url)}")
+                        with open(local_name, "wb") as f:
+                            f.write(signed_resp.content)
+                        
+                        student_text = transcribe_pdf_from_path(local_name, PROMPT_ANSWERSCRIPT)
+                        grading = grade_student_answer(rubric_text=rubric_txt, question_text=question_txt, student_answer=student_text)
+                        print(grading)
+                        results.append({
+                            "submission_id": submission_id,
+                            "user_id": user_id,
+                            "status": "graded",
+                            "grading": grading
+                        })
+                        upload_results(SUPABASE_URL, SUPABASE_KEY, submission_id, user_id, "graded", grading, assignment_id)
+                        continue
+                    else:
+                        print(f"   ❌ Signed download failed: {signed_resp.text[:200]}")
+                except Exception as e:
+                    print(f"   ❌ Signed URL failed: {e}")
+
+                # If both failed
+                results.append({
+                    "submission_id": submission_id,
+                    "user_id": user_id,
+                    "status": "download_failed",
+                    "detail": "Both direct and signed URL approaches failed"
+                })
+                print("Upload Results starting")
+                upload_results(SUPABASE_URL, SUPABASE_KEY, submission_id, user_id, "failed", grading, assignment_id)
             except Exception as e:
                 results.append({"submission_id": submission_id, "user_id": user_id, "status": "error", "detail": str(e)})
     finally:
