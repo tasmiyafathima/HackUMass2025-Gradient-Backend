@@ -70,10 +70,13 @@ def setup_auth():
         sys.exit(1)
 
 
-def grade_student_answer(rubric_text: str, student_answer: str, model_name: str = "gemini-2.5-flash"):
+def grade_student_answer(rubric_text: str, question_text: str, student_answer: str, model_name: str = "gemini-2.5-flash"):
     model = genai.GenerativeModel(model_name=model_name)
     grading_prompt = f"""
     You are an expert teacher grading a student's submission.
+    
+    Questions:
+    {question_text}
 
     Rubric (each question's grading criteria):
     {rubric_text}
@@ -87,6 +90,7 @@ def grade_student_answer(rubric_text: str, student_answer: str, model_name: str 
     2. For each question, use the rubric to decide a numeric score.
     3. Provide a short reason for why that score fits the rubric.
     4. Suggest how the student can improve.
+    5. Be extremely strict in the marking. If a question mentions do not add anything in your report for this question, give the student full marks.
 
     Only use numeric scores listed in the rubric. Do not invent new scales.
 
@@ -275,7 +279,7 @@ def get_signed_url(file_path: str, supabase_url: str, supabase_key: str,
     
     return sign_url+"?token"+signed_path
 
-def grade_submissions_for_assignment(assignment_id: str, assignment_idea: str, supabase_url: Optional[str] = None, supabase_key: Optional[str] = None) -> Dict[str, Any]:
+def grade_submissions_for_assignment(assignment_id: str, assignment_idea: Optional[str], supabase_url: Optional[str] = None, supabase_key: Optional[str] = None) -> Dict[str, Any]:
     """Fetch submissions for an assignment from Supabase, transcribe and grade each one.
 
     Parameters:
@@ -285,16 +289,73 @@ def grade_submissions_for_assignment(assignment_id: str, assignment_idea: str, s
 
     Returns a dict: {"count": n, "results": [...] }
     """
-    # Ensure Gemini auth configured
     setup_auth()
 
     SUPABASE_URL = supabase_url or os.environ.get("NEXT_PUBLIC_SUPABASE_URL") or os.environ.get("SUPABASE_URL")
     SUPABASE_KEY = supabase_key or os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("NEXT_PUBLIC_SUPABASE_ANON_KEY")
-    SUPABASE_ROLE = os.environ.get("SUPABASE_ROLE_KEY")
 
     if not SUPABASE_URL or not SUPABASE_KEY:
         raise Exception("Supabase URL or key not provided via args or environment variables")
 
+    tmpdir = tempfile.mkdtemp(prefix="submissions_")
+    PROMPT_ANSWERSCRIPT = (
+        "You are an expert transcriptionist specializing in handwritten documents."
+        "Transcribe the attached PDF, which contains handwritten questions."
+        "Your task is to produce a clean, plain-text version of the content."
+        "Follow these rules precisely:"
+        "1. Preserve the question format."
+        "2. Start each question with the prefix 'Question:' on a new line."
+        "3. For any handwritten math, transcribe it into clear, readable LaTeX format (e.g., $E = mc^2$, $\\frac{a}{b}$)."
+    )
+    questions_url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/assignments"
+    params = {"select": "*", "id": f"eq.{assignment_id}"}
+    headers = {
+        "apikey": SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Accept": "application/json"
+    }
+    resp = requests.get(questions_url, params=params, headers=headers, timeout=30)
+    if resp.status_code != 200:
+        raise Exception(f"Failed to fetch questions from Supabase: {resp.status_code} {resp.text}")
+    questions = resp.json()
+    question_txt = ""
+    rubric_txt = ""
+    for question in questions:
+        try:
+            file_url = question.get("file_url")
+            rubric_url = question.get("rubric_path")
+            signed_url = get_signed_url(file_url, SUPABASE_URL, SUPABASE_KEY, "assignments")
+            print(f"   Signed URL: {signed_url}")
+            
+            signed_resp = requests.get(signed_url, timeout=10)
+            print(f"   Signed response status: {signed_resp.status_code}")
+            
+            if signed_resp.status_code == 200:
+                print(f"   ✅ Signed download successful!")
+                local_name = os.path.join(tmpdir, f"{uuid.uuid4()}_{os.path.basename(file_url)}")
+                with open(local_name, "wb") as f:
+                    f.write(signed_resp.content)
+                
+                question_txt = transcribe_pdf_from_path(local_name, PROMPT_ANSWERSCRIPT)
+            else:
+                print(f"   ❌ Signed download failed: {signed_resp.text[:200]}")
+            signed_url = get_signed_url(rubric_url, SUPABASE_URL, SUPABASE_KEY, "rubric")
+            print(f"   Signed URL: {signed_url}")
+            
+            signed_resp = requests.get(signed_url, timeout=10)
+            print(f"   Signed response status: {signed_resp.status_code}")
+            
+            if signed_resp.status_code == 200:
+                print(f"   ✅ Signed download successful!")
+                local_name = os.path.join(tmpdir, f"{uuid.uuid4()}_{os.path.basename(rubric_url)}")
+                with open(local_name, "wb") as f:
+                    f.write(signed_resp.content)
+                
+                rubric_txt = transcribe_pdf_from_path(local_name, PROMPT_ANSWERSCRIPT)
+            else:
+                print(f"   ❌ Signed download failed: {signed_resp.text[:200]}")
+        except Exception as e:
+            print(f"   ❌ Signed URL failed: {e}")
     rest_url = f"{SUPABASE_URL.rstrip('/')}/rest/v1/submissions"
     params = {"select": "*", "assignment_id": f"eq.{assignment_id}"}
     headers = {
@@ -302,7 +363,6 @@ def grade_submissions_for_assignment(assignment_id: str, assignment_idea: str, s
         "Authorization": f"Bearer {SUPABASE_KEY}",
         "Accept": "application/json"
     }
-
     resp = requests.get(rest_url, params=params, headers=headers, timeout=30)
     if resp.status_code != 200:
         raise Exception(f"Failed to fetch submissions from Supabase: {resp.status_code} {resp.text}")
@@ -310,19 +370,15 @@ def grade_submissions_for_assignment(assignment_id: str, assignment_idea: str, s
     submissions = resp.json()
 
     results: List[Dict[str, Any]] = []
-
     PROMPT_ANSWERSCRIPT = (
         "You are an expert transcriptionist specializing in handwritten documents."
-        "Transcribe the attached PDF, which contains handwritten questions and answers."
+        "Transcribe the attached PDF, which contains handwritten answers."
         "Your task is to produce a clean, plain-text version of the content."
         "Follow these rules precisely:"
-        "1. Preserve the question and answer (Q&A) format."
-        "2. Start each question with the prefix 'Question:' on a new line."
-        "3. Start each answer with the prefix 'Answer:' on a new line."
-        "4. For any handwritten math, transcribe it into clear, readable LaTeX format (e.g., $E = mc^2$, $\\frac{a}{b}$)."
+        "1. Preserve the answer format."
+        "2. Start each answer with the prefix 'Answer:' on a new line."
+        "3. For any handwritten math, transcribe it into clear, readable LaTeX format (e.g., $E = mc^2$, $\\frac{a}{b}$)."
     )
-
-    tmpdir = tempfile.mkdtemp(prefix="submissions_")
     try:
         for sub in submissions:
             try:
@@ -344,36 +400,6 @@ def grade_submissions_for_assignment(assignment_id: str, assignment_idea: str, s
                     })
                     continue
 
-                # Try different approaches
-                
-                # Approach 1: Direct download (if public bucket)
-                print(f"\n🔄 Attempt 1: Direct download")
-                try:
-                    direct_url = construct_full_storage_url(file_url, SUPABASE_URL, "submissions")
-                    print(f"   Direct URL: {direct_url}")
-                    
-                    direct_resp = requests.get(direct_url, timeout=10)
-                    print(f"   Direct response status: {direct_resp.status_code}")
-                    
-                    if direct_resp.status_code == 200:
-                        print(f"   ✅ Direct download successful!")
-                        local_name = os.path.join(tmpdir, f"{uuid.uuid4()}_{os.path.basename(file_url)}")
-                        with open(local_name, "wb") as f:
-                            f.write(direct_resp.content)
-                        
-                        student_text = transcribe_pdf_from_path(local_name, PROMPT_ANSWERSCRIPT)
-                        grading = grade_student_answer(assignment_idea, student_text)
-                        
-                        results.append({
-                            "submission_id": submission_id,
-                            "user_id": user_id,
-                            "status": "graded",
-                            "grading": grading
-                        })
-                        continue
-                except Exception as e:
-                    print(f"   ❌ Direct download failed: {e}")
-
                 # Approach 2: Signed URL
                 print(f"\n🔄 Attempt 2: Signed URL")
                 try:
@@ -390,7 +416,7 @@ def grade_submissions_for_assignment(assignment_id: str, assignment_idea: str, s
                             f.write(signed_resp.content)
                         
                         student_text = transcribe_pdf_from_path(local_name, PROMPT_ANSWERSCRIPT)
-                        grading = grade_student_answer(assignment_idea, student_text)
+                        grading = grade_student_answer(rubric_text=rubric_txt, question_text=question_txt, student_answer=student_text)
                         print(grading)
                         results.append({
                             "submission_id": submission_id,
